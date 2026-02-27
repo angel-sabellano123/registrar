@@ -253,6 +253,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         /* Loading state */
         .btn-submit.loading { opacity: 0.7; pointer-events: none; }
     </style>
+<script>
+// Prevent going back to protected pages after logout
+if (window.history && window.history.pushState) {
+    window.history.pushState(null, null, window.location.href);
+    window.addEventListener('popstate', function () {
+        window.history.pushState(null, null, window.location.href);
+    });
+}
+</script>
 </head>
 <body>
 
