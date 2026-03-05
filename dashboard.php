@@ -13,6 +13,12 @@ if (!isset($_SESSION['user'])) {
     exit;
 }
 
+// ADMIN CANNOT ACCESS DASHBOARD - REDIRECT TO ADMIN PANEL
+if ($_SESSION['user']['role'] === 'admin') {
+    header('Location: admin.php');
+    exit;
+}
+
 $user = $_SESSION['user'];
 $db = getDB();
 
@@ -311,6 +317,7 @@ function statusBadge($s) {
         .form-group-d textarea { resize: vertical; min-height: 80px; }
         .form-group-d input::placeholder, .form-group-d textarea::placeholder { color: rgba(255,255,255,0.2); }
         .form-full { grid-column: 1 / -1; }
+        .form-group-d.hidden { display: none; }
 
         .submit-btn {
             background: linear-gradient(135deg, var(--gold), #c73652);
@@ -419,8 +426,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_ticket'])) {
     $copies = max(1, intval($_POST['copies'] ?? 1));
     $notes  = trim($_POST['notes'] ?? '');
 
-    if (empty($rtype) || empty($purpose)) {
-        $ticketError = 'Please fill in all required fields.';
+    // Validate based on request type
+    // ALL request types don't need purpose/reason
+    
+    if (empty($rtype)) {
+        $ticketError = 'Please select a request type.';
     } else {
         $db2 = getDB();
         $tnum = 'TKT-' . date('Ymd') . '-' . strtoupper(substr(uniqid(), -5));
@@ -506,11 +516,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_ticket'])) {
         <a href="?page=profile" class="nav-item <?= $page=='profile'?'active':'' ?>">
             <i class="fas fa-user-circle"></i> My Profile
         </a>
-        <?php if ($user['role'] === 'admin'): ?>
-        <a href="admin.php" class="nav-item">
-            <i class="fas fa-shield-halved"></i> Admin Panel
-        </a>
-        <?php endif; ?>
     </nav>
 
     <div class="sidebar-bottom">
@@ -672,7 +677,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_ticket'])) {
                             <tr>
                                 <td><span class="ticket-num"><?= htmlspecialchars($t['ticket_number']) ?></span></td>
                                 <td><?= htmlspecialchars($requestTypes[$t['request_type']]['label'] ?? $t['request_type']) ?></td>
-                                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><?= htmlspecialchars($t['purpose']) ?></td>
+                                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><?= htmlspecialchars($t['purpose'] ?: '—') ?></td>
                                 <td><?= date('M d, Y', strtotime($t['created_at'])) ?></td>
                                 <td><?= statusBadge($t['status']) ?></td>
                             </tr>
@@ -734,24 +739,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_ticket'])) {
                         <input type="hidden" name="submit_ticket" value="1">
                         <input type="hidden" name="request_type" id="request_type_field" value="<?= htmlspecialchars($selType) ?>">
                         <div class="form-grid">
-                            <div class="form-group-d">
+                            <div class="form-group-d" id="purpose-field">
                                 <label>Purpose / Reason for Request *</label>
-                                <input type="text" name="purpose" placeholder="e.g. For employment, board exam, etc." required>
+                                <input type="text" name="purpose" id="purpose-input" placeholder="e.g. For employment, board exam, etc.">
                             </div>
                             <div class="form-group-d">
                                 <label>Number of Copies</label>
                                 <input type="number" name="copies" value="1" min="1" max="10">
                             </div>
-                            <div class="form-group-d">
-                                <label>Semester</label>
-                                <select name="semester">
+                            <div class="form-group-d" id="semester-field">
+                                <label>Semester & Year</label>
+                                <select name="semester & Year">
                                     <option value="">Select Semester</option>
                                     <option value="1st Semester">1st Semester</option>
                                     <option value="2nd Semester">2nd Semester</option>
                                     <option value="Summer">Summer</option>
+                                    <option value="Whole Year">Whole Year</option>
                                 </select>
                             </div>
-                            <div class="form-group-d">
+                            <div class="form-group-d" id="school-year-field">
                                 <label>School Year</label>
                                 <input type="text" name="school_year" placeholder="e.g. 2024–2025">
                             </div>
@@ -847,7 +853,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_ticket'])) {
                                     <?= htmlspecialchars($rt['label']) ?>
                                 </span>
                             </td>
-                            <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><?= htmlspecialchars($t['purpose']) ?></td>
+                            <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><?= htmlspecialchars($t['purpose'] ?: '—') ?></td>
                             <td><?= $t['copies'] ?></td>
                             <td><?= htmlspecialchars($t['school_year'] ?: '—') ?></td>
                             <td><?= date('M d, Y', strtotime($t['created_at'])) ?></td>
@@ -971,6 +977,28 @@ function selectType(key) {
     }
 
     document.getElementById('request_type_field').value = key;
+    
+    // Show/hide fields based on type
+    const purposeField = document.getElementById('purpose-field');
+    const semesterField = document.getElementById('semester-field');
+    const schoolYearField = document.getElementById('school-year-field');
+    const purposeInput = document.getElementById('purpose-input');
+    
+    // TOR: only copies and notes (hide purpose, semester, school year)
+    // All others: hide purpose only, show semester and school year
+    
+    if (key === 'tor') {
+        purposeField.classList.add('hidden');
+        semesterField.classList.add('hidden');
+        schoolYearField.classList.add('hidden');
+        purposeInput.removeAttribute('required');
+    } else {
+        purposeField.classList.add('hidden');
+        semesterField.classList.remove('hidden');
+        schoolYearField.classList.remove('hidden');
+        purposeInput.removeAttribute('required');
+    }
+    
     document.getElementById('requestForm').style.display = 'block';
     document.getElementById('noTypeMsg').style.display = 'none';
     if (rt) {

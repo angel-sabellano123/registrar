@@ -8,6 +8,7 @@ header("Cache-Control: post-check=0, pre-check=0", false);
 header("Pragma: no-cache");
 header("Expires: Sat, 01 Jan 2000 00:00:00 GMT");
 
+// Admin-only access
 if (!isset($_SESSION['user']) || $_SESSION['user']['role'] !== 'admin') {
     header('Location: login.php');
     exit;
@@ -22,7 +23,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
     $tid     = intval($_POST['ticket_id']);
     $status  = $_POST['status'];
     $remarks = trim($_POST['remarks'] ?? '');
-    $allowed = ['pending','in_progress','ready','completed','rejected'];
+    $allowed = ['approved','ready','claimed'];
     if (in_array($status, $allowed)) {
         $stmt = $db->prepare("UPDATE tickets SET status=?, admin_remarks=? WHERE id=?");
         $stmt->bind_param("ssi", $status, $remarks, $tid);
@@ -31,7 +32,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
 
         $trow = $db->query("SELECT * FROM tickets WHERE id=$tid")->fetch_assoc();
         if ($trow) {
-            $statusLabels = ['pending'=>'Pending','in_progress'=>'In Progress','ready'=>'Ready for Pickup','completed'=>'Completed','rejected'=>'Rejected'];
+            $statusLabels = ['approved'=>'Approved','ready'=>'Ready for Pickup','claimed'=>'Claimed'];
             $lbl = $statusLabels[$status] ?? $status;
             $nm  = "Your ticket {$trow['ticket_number']} status has been updated to: $lbl." . ($remarks ? " Remarks: $remarks" : '');
             $ns  = $db->prepare("INSERT INTO notifications (user_id, ticket_id, message) VALUES (?,?,?)");
@@ -43,26 +44,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
     }
 }
 
-// Stats
+// Stats - Updated to use new status values
 $totalTickets = $db->query("SELECT COUNT(*) c FROM tickets")->fetch_assoc()['c'];
-$pendingCount = $db->query("SELECT COUNT(*) c FROM tickets WHERE status='pending'")->fetch_assoc()['c'];
-$inProgCount  = $db->query("SELECT COUNT(*) c FROM tickets WHERE status='in_progress'")->fetch_assoc()['c'];
+$approvedCount = $db->query("SELECT COUNT(*) c FROM tickets WHERE status='approved'")->fetch_assoc()['c'];
+$readyCount  = $db->query("SELECT COUNT(*) c FROM tickets WHERE status='ready'")->fetch_assoc()['c'];
 $totalUsers   = $db->query("SELECT COUNT(*) c FROM users WHERE role='student'")->fetch_assoc()['c'];
 
-// Current view: 'students' (default) or 'tickets'
-$view   = $_GET['view']   ?? 'students';
+// Current view and filters
+$view   = $_GET['view']   ?? 'dashboard';
 $filter = $_GET['filter'] ?? 'all';
 $search = trim($_GET['s'] ?? '');
 
-// Always load students
-$students = $db->query("
-    SELECT u.*, (SELECT COUNT(*) FROM tickets WHERE user_id = u.id) AS ticket_count
-    FROM users u
-    WHERE u.role = 'student'
-    ORDER BY u.created_at DESC
-")->fetch_all(MYSQLI_ASSOC);
+// Load students only when viewing students
+$students = [];
+$student_search = '';
+if ($view === 'students') {
+    $student_search = trim($_GET['student_search'] ?? '');
+    $searchWhere = '';
+    if ($student_search) {
+        $searchWhere = " AND (u.first_name LIKE '%$student_search%' OR u.last_name LIKE '%$student_search%' OR u.student_id LIKE '%$student_search%' OR u.email LIKE '%$student_search%')";
+    }
+    $students = $db->query("
+        SELECT u.*, (SELECT COUNT(*) FROM tickets WHERE user_id = u.id) AS ticket_count
+        FROM users u
+        WHERE u.role = 'student' $searchWhere
+        ORDER BY u.created_at DESC
+    ")->fetch_all(MYSQLI_ASSOC);
+}
 
-// Load tickets only in ticket view
+// Load tickets
 $tickets = [];
 if ($view === 'tickets') {
     $filterWhere = $filter !== 'all' ? "WHERE t.status='$filter'" : "WHERE 1=1";
@@ -89,13 +99,11 @@ $requestLabels = [
 
 function sBadge($s) {
     $map = [
-        'pending'     => ['bg'=>'rgba(245,166,35,0.15)','color'=>'#f5a623','label'=>'Pending'],
-        'in_progress' => ['bg'=>'rgba(0,122,255,0.15)', 'color'=>'#007aff','label'=>'In Progress'],
-        'ready'       => ['bg'=>'rgba(52,199,89,0.15)', 'color'=>'#34c759','label'=>'Ready'],
-        'completed'   => ['bg'=>'rgba(88,86,214,0.15)', 'color'=>'#5e5ce6','label'=>'Completed'],
-        'rejected'    => ['bg'=>'rgba(255,59,48,0.15)', 'color'=>'#ff3b30','label'=>'Rejected'],
+        'approved'    => ['bg'=>'rgba(52,199,89,0.15)', 'color'=>'#34c759','label'=>'Approved'],
+        'ready'       => ['bg'=>'rgba(0,122,255,0.15)', 'color'=>'#007aff','label'=>'Ready for Pickup'],
+        'claimed'     => ['bg'=>'rgba(88,86,214,0.15)', 'color'=>'#5e5ce6','label'=>'Claimed'],
     ];
-    $d = $map[$s] ?? $map['pending'];
+    $d = $map[$s] ?? $map['approved'];
     return "<span style='background:{$d['bg']};color:{$d['color']};padding:3px 10px;border-radius:50px;font-size:0.72rem;font-weight:700'>{$d['label']}</span>";
 }
 ?>
@@ -157,7 +165,7 @@ function sBadge($s) {
         .topbar-title { font-family:'Syne',sans-serif; font-size:1.05rem; font-weight:700; }
         .admin-badge { background:rgba(233,69,96,0.15); color:var(--gold); font-size:0.72rem; font-weight:700; padding:3px 10px; border-radius:50px; text-transform:uppercase; letter-spacing:0.5px; }
 
-        .content { flex:1; padding:1.8rem; }
+        .content { flex:1; padding:1.8rem; overflow-y:auto; }
         .stats-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:1rem; margin-bottom:1.8rem; }
         .stat-card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:1.2rem 1.4rem; display:flex; align-items:center; justify-content:space-between; }
         .stat-val { font-family:'Syne',sans-serif; font-size:1.8rem; font-weight:800; }
@@ -211,6 +219,20 @@ function sBadge($s) {
         .alert-s { padding:0.75rem 1rem; border-radius:8px; font-size:0.85rem; margin-bottom:1.2rem; background:rgba(52,199,89,0.1); border:1px solid rgba(52,199,89,0.25); color:#34c759; }
         .empty-state { text-align:center; padding:3rem; color:var(--gray); }
         .empty-state i { font-size:2.5rem; opacity:0.3; display:block; margin-bottom:1rem; }
+
+        .admin-only-message {
+            background:rgba(233,69,96,0.12); border:1px solid rgba(233,69,96,0.25);
+            border-radius:12px; padding:2rem; text-align:center; margin-bottom:1.8rem;
+        }
+        .admin-only-message i { font-size:2.5rem; color:var(--gold); margin-bottom:0.8rem; display:block; }
+        .admin-only-message h3 { font-family:'Syne',sans-serif; font-size:1.1rem; margin-bottom:0.4rem; }
+        .admin-only-message p { color:var(--gray); font-size:0.9rem; }
+
+        @media (max-width: 768px) {
+            .sidebar { width:100%; position:absolute; transform:translateX(-100%); }
+            .main { margin-left:0; }
+            .search-input { width:150px; }
+        }
     </style>
 </head>
 <body>
@@ -222,17 +244,18 @@ function sBadge($s) {
     </a>
     <nav style="flex:1;overflow-y:auto;padding:0.5rem 0">
         <div class="nav-section">Overview</div>
-        <a href="admin.php" class="nav-item <?= $view === 'students' ? 'active' : '' ?>">
+        <a href="admin.php?view=dashboard" class="nav-item <?= $view === 'dashboard' ? 'active' : '' ?>">
+            <i class="fas fa-gauge-high"></i> Dashboard
+        </a>
+        <a href="admin.php?view=students" class="nav-item <?= $view === 'students' ? 'active' : '' ?>">
             <i class="fas fa-users"></i> Students
         </a>
 
         <div class="nav-section" style="margin-top:0.5rem">Ticket Management</div>
         <a href="admin.php?view=tickets&filter=all"        class="nav-item <?= ($view==='tickets'&&$filter==='all')       ?'active':'' ?>"><i class="fas fa-ticket"></i> All Tickets</a>
-        <a href="admin.php?view=tickets&filter=pending"    class="nav-item <?= ($view==='tickets'&&$filter==='pending')   ?'active':'' ?>"><i class="fas fa-clock"        style="color:#f5a623"></i> Pending</a>
-        <a href="admin.php?view=tickets&filter=in_progress"class="nav-item <?= ($view==='tickets'&&$filter==='in_progress')?'active':'' ?>"><i class="fas fa-spinner"     style="color:#007aff"></i> In Progress</a>
-        <a href="admin.php?view=tickets&filter=ready"      class="nav-item <?= ($view==='tickets'&&$filter==='ready')     ?'active':'' ?>"><i class="fas fa-circle-check" style="color:#34c759"></i> Ready</a>
-        <a href="admin.php?view=tickets&filter=completed"  class="nav-item <?= ($view==='tickets'&&$filter==='completed') ?'active':'' ?>"><i class="fas fa-check-double" style="color:#5e5ce6"></i> Completed</a>
-        <a href="admin.php?view=tickets&filter=rejected"   class="nav-item <?= ($view==='tickets'&&$filter==='rejected')  ?'active':'' ?>"><i class="fas fa-xmark"        style="color:#ff3b30"></i> Rejected</a>
+        <a href="admin.php?view=tickets&filter=approved"    class="nav-item <?= ($view==='tickets'&&$filter==='approved')   ?'active':'' ?>"><i class="fas fa-check"        style="color:#34c759"></i> Approved</a>
+        <a href="admin.php?view=tickets&filter=ready"       class="nav-item <?= ($view==='tickets'&&$filter==='ready')      ?'active':'' ?>"><i class="fas fa-circle-check" style="color:#007aff"></i> Ready</a>
+        <a href="admin.php?view=tickets&filter=claimed"     class="nav-item <?= ($view==='tickets'&&$filter==='claimed')    ?'active':'' ?>"><i class="fas fa-check-double" style="color:#5e5ce6"></i> Claimed</a>
 
         <div class="nav-section" style="margin-top:0.5rem">Account</div>
         <a href="logout.php" class="nav-item"><i class="fas fa-sign-out-alt" style="color:#ff3b30"></i> Sign Out</a>
@@ -253,6 +276,16 @@ function sBadge($s) {
         <div class="alert-s"><i class="fas fa-circle-check" style="margin-right:8px"></i><?= htmlspecialchars($msg) ?></div>
         <?php endif; ?>
 
+        <!-- ══ DASHBOARD VIEW (default) ══ -->
+        <?php if ($view === 'dashboard'): ?>
+
+        <div style="margin-bottom:2rem">
+            <h1 style="font-family:'Syne',sans-serif;font-size:1.5rem;font-weight:800">
+                Welcome back, Admin! 👋
+            </h1>
+            <p style="color:var(--gray);margin-top:4px;font-size:0.9rem">Here's an overview of the system and ticket management.</p>
+        </div>
+
         <!-- Stats -->
         <div class="stats-row">
             <div class="stat-card">
@@ -264,23 +297,94 @@ function sBadge($s) {
                 <div class="stat-icon" style="background:rgba(0,122,255,0.12)"><i class="fas fa-ticket" style="color:#007aff"></i></div>
             </div>
             <div class="stat-card">
-                <div><div class="stat-val"><?= $pendingCount ?></div><div class="stat-lbl">Pending</div></div>
-                <div class="stat-icon" style="background:rgba(245,166,35,0.12)"><i class="fas fa-clock" style="color:#f5a623"></i></div>
+                <div><div class="stat-val"><?= $approvedCount ?></div><div class="stat-lbl">Approved</div></div>
+                <div class="stat-icon" style="background:rgba(52,199,89,0.12)"><i class="fas fa-check" style="color:#34c759"></i></div>
             </div>
             <div class="stat-card">
-                <div><div class="stat-val"><?= $inProgCount ?></div><div class="stat-lbl">In Progress</div></div>
-                <div class="stat-icon" style="background:rgba(175,82,222,0.12)"><i class="fas fa-spinner" style="color:#af52de"></i></div>
+                <div><div class="stat-val"><?= $readyCount ?></div><div class="stat-lbl">Ready for Pickup</div></div>
+                <div class="stat-icon" style="background:rgba(0,122,255,0.12)"><i class="fas fa-circle-check" style="color:#007aff"></i></div>
             </div>
         </div>
 
-        <?php if ($view === 'students'): ?>
-        <!-- ══ STUDENTS VIEW (default) ══ -->
+        <!-- Recent Tickets -->
         <div class="card">
             <div class="card-header">
-                <span class="card-title"><i class="fas fa-users" style="margin-right:8px;color:var(--gold)"></i>Registered Students</span>
-                <span style="font-size:0.82rem;color:var(--gray);background:var(--card2);padding:4px 14px;border-radius:50px;border:1px solid var(--border)">
-                    <?= count($students) ?> total
-                </span>
+                <span class="card-title"><i class="fas fa-history" style="margin-right:8px;color:var(--gold)"></i>Recent Tickets</span>
+                <a href="admin.php?view=tickets" style="font-size:0.8rem;color:var(--gold);text-decoration:none">View All →</a>
+            </div>
+            <div class="table-wrap">
+                <?php
+                $db = getDB();
+                $recentTickets = $db->query("
+                    SELECT t.*, u.first_name, u.last_name, u.student_id
+                    FROM tickets t JOIN users u ON t.user_id = u.id
+                    ORDER BY t.created_at DESC LIMIT 10
+                ")->fetch_all(MYSQLI_ASSOC);
+                $db->close();
+                ?>
+                <?php if (empty($recentTickets)): ?>
+                <div class="empty-state"><i class="fas fa-inbox"></i><p>No tickets submitted yet.</p></div>
+                <?php else: ?>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Ticket #</th>
+                            <th>Student</th>
+                            <th>Request Type</th>
+                            <th>Purpose</th>
+                            <th>Submitted</th>
+                            <th>Status</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($recentTickets as $t): ?>
+                        <tr>
+                            <td><span class="tnum"><?= htmlspecialchars($t['ticket_number']) ?></span></td>
+                            <td>
+                                <div style="font-weight:600;font-size:0.85rem"><?= htmlspecialchars($t['first_name'].' '.$t['last_name']) ?></div>
+                                <div style="font-size:0.75rem;color:var(--gray)"><?= htmlspecialchars($t['student_id']) ?></div>
+                            </td>
+                            <td><?= htmlspecialchars($requestLabels[$t['request_type']] ?? $t['request_type']) ?></td>
+                            <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.8rem;color:var(--gray)"><?= htmlspecialchars($t['purpose'] ?: '—') ?></td>
+                            <td style="font-size:0.8rem;color:var(--gray)"><?= date('M d, Y', strtotime($t['created_at'])) ?></td>
+                            <td><?= sBadge($t['status']) ?></td>
+                            <td>
+                                <button class="action-btn btn-edit" onclick="openModal(<?= $t['id'] ?>,'<?= $t['ticket_number'] ?>','<?= $t['status'] ?>','<?= addslashes($t['admin_remarks']??'') ?>')">
+                                    <i class="fas fa-pen" style="margin-right:4px"></i>Update
+                                </button>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+                <?php endif; ?>
+            </div>
+        </div>
+
+        <!-- ══ STUDENTS VIEW ══ -->
+        <?php elseif ($view === 'students'): ?>
+
+        <div style="margin-bottom:2rem">
+            <h1 style="font-family:'Syne',sans-serif;font-size:1.5rem;font-weight:800">
+                Registered Students
+            </h1>
+            <p style="color:var(--gray);margin-top:4px;font-size:0.9rem">Manage and view all student accounts in the system.</p>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title"><i class="fas fa-users" style="margin-right:8px;color:var(--gold)"></i>Student Directory</span>
+                <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap">
+                    <form class="search-form" method="GET">
+                        <input type="hidden" name="view" value="students">
+                        <input type="text" name="student_search" class="search-input" placeholder="Search by name, ID, or email…" value="<?= htmlspecialchars($student_search) ?>">
+                        <button type="submit" class="search-btn"><i class="fas fa-search"></i></button>
+                    </form>
+                    <span style="font-size:0.82rem;color:var(--gray);background:var(--card2);padding:4px 14px;border-radius:50px;border:1px solid var(--border)">
+                        <?= count($students) ?> total
+                    </span>
+                </div>
             </div>
             <div class="table-wrap">
                 <?php if (empty($students)): ?>
@@ -296,7 +400,7 @@ function sBadge($s) {
                             <th>Course</th>
                             <th>Year Level</th>
                             <th>Tickets</th>
-                            <th>Registered</th>
+                            <th>Registered</th> 
                         </tr>
                     </thead>
                     <tbody>
@@ -330,13 +434,21 @@ function sBadge($s) {
             </div>
         </div>
 
-        <?php else: ?>
         <!-- ══ TICKETS VIEW ══ -->
+        <?php elseif ($view === 'tickets'): ?>
+
+        <div style="margin-bottom:2rem">
+            <h1 style="font-family:'Syne',sans-serif;font-size:1.5rem;font-weight:800">
+                Ticket Management
+            </h1>
+            <p style="color:var(--gray);margin-top:4px;font-size:0.9rem">View and update all student ticket requests.</p>
+        </div>
+
         <div class="card">
             <div class="card-header">
                 <span class="card-title">
                     <i class="fas fa-ticket" style="margin-right:8px;color:var(--gold)"></i>
-                    <?php $vl=['all'=>'All Tickets','pending'=>'Pending','in_progress'=>'In Progress','ready'=>'Ready for Pickup','completed'=>'Completed','rejected'=>'Rejected']; echo $vl[$filter]??'Tickets'; ?>
+                    <?php $vl=['all'=>'All Tickets','approved'=>'Approved','ready'=>'Ready for Pickup','claimed'=>'Claimed']; echo $vl[$filter]??'Tickets'; ?>
                 </span>
                 <form class="search-form" method="GET">
                     <input type="hidden" name="view"   value="tickets">
@@ -347,8 +459,8 @@ function sBadge($s) {
             </div>
             <div style="padding:0.8rem 1.4rem;border-bottom:1px solid var(--border);display:flex;gap:0.5rem;flex-wrap:wrap">
                 <?php
-                $ftabs=['all'=>'All','pending'=>'Pending','in_progress'=>'In Progress','ready'=>'Ready','completed'=>'Completed','rejected'=>'Rejected'];
-                $ftc  =['all'=>'#8892a4','pending'=>'#f5a623','in_progress'=>'#007aff','ready'=>'#34c759','completed'=>'#5e5ce6','rejected'=>'#ff3b30'];
+                $ftabs=['all'=>'All','approved'=>'Approved','ready'=>'Ready','claimed'=>'Claimed'];
+                $ftc  =['all'=>'#8892a4','approved'=>'#34c759','ready'=>'#007aff','claimed'=>'#5e5ce6'];
                 foreach ($ftabs as $fk=>$fl) {
                     $act=($filter===$fk); $c=$ftc[$fk];
                     $st=$act?"background:rgba(0,0,0,0.2);color:$c;border-color:$c":"background:transparent;color:var(--gray);border-color:var(--border)";
@@ -371,7 +483,7 @@ function sBadge($s) {
                                 <div style="font-size:0.75rem;color:var(--gray)"><?= htmlspecialchars($t['student_id']) ?></div>
                             </td>
                             <td><?= htmlspecialchars($requestLabels[$t['request_type']] ?? $t['request_type']) ?></td>
-                            <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.8rem;color:var(--gray)"><?= htmlspecialchars($t['purpose']) ?></td>
+                            <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.8rem;color:var(--gray)"><?= htmlspecialchars($t['purpose'] ?: '—') ?></td>
                             <td><?= $t['copies'] ?></td>
                             <td style="font-size:0.8rem;color:var(--gray)"><?= date('M d, Y', strtotime($t['created_at'])) ?></td>
                             <td><?= sBadge($t['status']) ?></td>
@@ -387,6 +499,7 @@ function sBadge($s) {
                 <?php endif; ?>
             </div>
         </div>
+
         <?php endif; ?>
 
     </div>
@@ -405,11 +518,9 @@ function sBadge($s) {
             </div>
             <label>Status *</label>
             <select name="status" id="modalStatus">
-                <option value="pending">Pending</option>
-                <option value="in_progress">In Progress</option>
+                <option value="approved">Approved</option>
                 <option value="ready">Ready for Pickup</option>
-                <option value="completed">Completed</option>
-                <option value="rejected">Rejected</option>
+                <option value="claimed">Claimed</option>
             </select>
             <label>Admin Remarks</label>
             <textarea name="remarks" id="modalRemarks" rows="3" placeholder="Add remarks or instructions for the student…"></textarea>
