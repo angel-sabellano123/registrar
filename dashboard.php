@@ -22,11 +22,11 @@ if ($_SESSION['user']['role'] === 'admin') {
 $user = $_SESSION['user'];
 $db = getDB();
 
-// Stats
-$total = $db->query("SELECT COUNT(*) c FROM tickets WHERE user_id={$user['id']}")->fetch_assoc()['c'];
-$pending = $db->query("SELECT COUNT(*) c FROM tickets WHERE user_id={$user['id']} AND status='pending'")->fetch_assoc()['c'];
-$inprog  = $db->query("SELECT COUNT(*) c FROM tickets WHERE user_id={$user['id']} AND status='in_progress'")->fetch_assoc()['c'];
-$done    = $db->query("SELECT COUNT(*) c FROM tickets WHERE user_id={$user['id']} AND (status='completed' OR status='ready')")->fetch_assoc()['c'];
+// Stats — now matching admin statuses: approved, ready, claimed
+$total    = $db->query("SELECT COUNT(*) c FROM tickets WHERE user_id={$user['id']}")->fetch_assoc()['c'];
+$approved = $db->query("SELECT COUNT(*) c FROM tickets WHERE user_id={$user['id']} AND status='approved'")->fetch_assoc()['c'];
+$ready    = $db->query("SELECT COUNT(*) c FROM tickets WHERE user_id={$user['id']} AND status='ready'")->fetch_assoc()['c'];
+$claimed  = $db->query("SELECT COUNT(*) c FROM tickets WHERE user_id={$user['id']} AND status='claimed'")->fetch_assoc()['c'];
 
 // Recent tickets
 $recentQ = $db->query("SELECT * FROM tickets WHERE user_id={$user['id']} ORDER BY created_at DESC LIMIT 10");
@@ -55,15 +55,14 @@ $requestTypes = [
     'other'           => ['label'=>'Other Request','icon'=>'fas fa-ellipsis','color'=>'#8892a4'],
 ];
 
+// Updated statusBadge to match admin statuses
 function statusBadge($s) {
     $map = [
-        'pending'     => ['bg'=>'rgba(245,166,35,0.15)','color'=>'#f5a623','label'=>'Pending','icon'=>'fa-clock'],
-        'in_progress' => ['bg'=>'rgba(0,122,255,0.15)','color'=>'#007aff','label'=>'In Progress','icon'=>'fa-spinner'],
-        'ready'       => ['bg'=>'rgba(52,199,89,0.15)','color'=>'#34c759','label'=>'Ready for Pickup','icon'=>'fa-circle-check'],
-        'completed'   => ['bg'=>'rgba(88,86,214,0.15)','color'=>'#5e5ce6','label'=>'Completed','icon'=>'fa-check-double'],
-        'rejected'    => ['bg'=>'rgba(255,59,48,0.15)','color'=>'#ff3b30','label'=>'Rejected','icon'=>'fa-xmark'],
+        'approved' => ['bg'=>'rgba(52,199,89,0.15)',   'color'=>'#34c759', 'label'=>'Approved',           'icon'=>'fa-check'],
+        'ready'    => ['bg'=>'rgba(0,122,255,0.15)',   'color'=>'#007aff', 'label'=>'Ready for Pickup',   'icon'=>'fa-circle-check'],
+        'claimed'  => ['bg'=>'rgba(88,86,214,0.15)',   'color'=>'#5e5ce6', 'label'=>'Claimed',            'icon'=>'fa-check-double'],
     ];
-    $d = $map[$s] ?? $map['pending'];
+    $d = $map[$s] ?? ['bg'=>'rgba(245,166,35,0.15)', 'color'=>'#f5a623', 'label'=>ucfirst($s), 'icon'=>'fa-clock'];
     return "<span style='background:{$d['bg']};color:{$d['color']};padding:4px 12px;border-radius:50px;font-size:0.75rem;font-weight:600;'><i class='fas {$d['icon']}' style='margin-right:5px'></i>{$d['label']}</span>";
 }
 ?>
@@ -293,9 +292,6 @@ function statusBadge($s) {
         .ticket-num { font-family: 'Syne', sans-serif; font-size: 0.78rem; font-weight: 700; color: var(--gold); }
 
         /* FORM */
-        .form-section { display: none; }
-        .form-section.active { display: block; }
-
         .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; }
         @media (max-width: 700px) { .form-grid { grid-template-columns: 1fr; } }
 
@@ -410,6 +406,13 @@ function statusBadge($s) {
         }
         .alert-success-d { background: rgba(52,199,89,0.1); border: 1px solid rgba(52,199,89,0.25); color: #34c759; }
         .alert-error-d { background: rgba(233,69,96,0.12); border: 1px solid rgba(233,69,96,0.25); color: #ff6b87; }
+
+        /* Filter tab styles */
+        .filter-tab {
+            padding: 0.45rem 1rem; border-radius: 8px; font-size: 0.8rem;
+            font-weight: 600; text-decoration: none; border: 1px solid;
+            transition: all 0.2s; display: inline-block;
+        }
     </style>
 </head>
 <body>
@@ -426,9 +429,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_ticket'])) {
     $copies = max(1, intval($_POST['copies'] ?? 1));
     $notes  = trim($_POST['notes'] ?? '');
 
-    // Validate based on request type
-    // ALL request types don't need purpose/reason
-    
     if (empty($rtype)) {
         $ticketError = 'Please select a request type.';
     } else {
@@ -436,10 +436,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_ticket'])) {
         $tnum = 'TKT-' . date('Ymd') . '-' . strtoupper(substr(uniqid(), -5));
         $uid5 = intval($user['id']);
         $copies_int = intval($copies);
-        $stmt5 = $db2->prepare("INSERT INTO tickets (ticket_number, user_id, request_type, purpose, semester, school_year, copies, notes) VALUES (?,?,?,?,?,?,?,?)");
-        $stmt5->bind_param("sissssis", $tnum, $uid5, $rtype, $purpose, $sem, $sy, $copies_int, $notes);
+        $stmt5 = $db2->prepare("INSERT INTO tickets (ticket_number, user_id, request_type, purpose, semester, school_year, copies, notes, status) VALUES (?,?,?,?,?,?,?,?,?)");
+        $defaultStatus = 'approved';
+        $stmt5->bind_param("sissssiss", $tnum, $uid5, $rtype, $purpose, $sem, $sy, $copies_int, $notes, $defaultStatus);
         if ($stmt5->execute()) {
-            // notify
             $notifMsg = "Your request for '{$requestTypes[$rtype]['label']}' has been submitted successfully. Ticket: $tnum";
             $notifStmt = $db2->prepare("INSERT INTO notifications (user_id, ticket_id, message) VALUES (?,?,?)");
             $lastId = $stmt5->insert_id;
@@ -454,13 +454,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_ticket'])) {
         $stmt5->close();
         $db2->close();
 
-        // Refresh tickets
+        // Refresh stats & tickets
         $db3 = getDB();
         $recentQ3 = $db3->query("SELECT * FROM tickets WHERE user_id={$user['id']} ORDER BY created_at DESC LIMIT 10");
-        $tickets = $recentQ3->fetch_all(MYSQLI_ASSOC);
-        $total = $db3->query("SELECT COUNT(*) c FROM tickets WHERE user_id={$user['id']}")->fetch_assoc()['c'];
-        $pending = $db3->query("SELECT COUNT(*) c FROM tickets WHERE user_id={$user['id']} AND status='pending'")->fetch_assoc()['c'];
-        $done = $db3->query("SELECT COUNT(*) c FROM tickets WHERE user_id={$user['id']} AND (status='completed' OR status='ready')")->fetch_assoc()['c'];
+        $tickets  = $recentQ3->fetch_all(MYSQLI_ASSOC);
+        $total    = $db3->query("SELECT COUNT(*) c FROM tickets WHERE user_id={$user['id']}")->fetch_assoc()['c'];
+        $approved = $db3->query("SELECT COUNT(*) c FROM tickets WHERE user_id={$user['id']} AND status='approved'")->fetch_assoc()['c'];
+        $ready    = $db3->query("SELECT COUNT(*) c FROM tickets WHERE user_id={$user['id']} AND status='ready'")->fetch_assoc()['c'];
+        $claimed  = $db3->query("SELECT COUNT(*) c FROM tickets WHERE user_id={$user['id']} AND status='claimed'")->fetch_assoc()['c'];
         $db3->close();
     }
 }
@@ -499,8 +500,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_ticket'])) {
         </a>
         <a href="?page=my_requests" class="nav-item <?= $page=='my_requests'?'active':'' ?>">
             <i class="fas fa-ticket"></i> My Requests
-            <?php if ($pending > 0): ?>
-            <span class="nav-badge"><?= $pending ?></span>
+            <?php if ($approved > 0): ?>
+            <span class="nav-badge"><?= $approved ?></span>
             <?php endif; ?>
         </a>
 
@@ -610,6 +611,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_ticket'])) {
             <p style="color:var(--gray);margin-top:4px;font-size:0.9rem">Here's an overview of your document requests.</p>
         </div>
 
+        <!-- Stats — Approved, Ready for Pickup, Claimed (matching admin) -->
         <div class="stats-row">
             <div class="stat-card">
                 <div>
@@ -622,35 +624,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_ticket'])) {
             </div>
             <div class="stat-card">
                 <div>
-                    <div class="stat-val"><?= $pending ?></div>
-                    <div class="stat-lbl">Pending</div>
-                </div>
-                <div class="stat-icon-box" style="background:rgba(245,166,35,0.12)">
-                    <i class="fas fa-clock" style="color:#f5a623"></i>
-                </div>
-            </div>
-            <div class="stat-card">
-                <div>
-                    <div class="stat-val"><?= $inprog ?></div>
-                    <div class="stat-lbl">In Progress</div>
-                </div>
-                <div class="stat-icon-box" style="background:rgba(175,82,222,0.12)">
-                    <i class="fas fa-spinner" style="color:#af52de"></i>
-                </div>
-            </div>
-            <div class="stat-card">
-                <div>
-                    <div class="stat-val"><?= $done ?></div>
-                    <div class="stat-lbl">Completed</div>
+                    <div class="stat-val" style="color:#34c759"><?= $approved ?></div>
+                    <div class="stat-lbl">Approved</div>
                 </div>
                 <div class="stat-icon-box" style="background:rgba(52,199,89,0.12)">
-                    <i class="fas fa-circle-check" style="color:#34c759"></i>
+                    <i class="fas fa-check" style="color:#34c759"></i>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div>
+                    <div class="stat-val" style="color:#007aff"><?= $ready ?></div>
+                    <div class="stat-lbl">Ready for Pickup</div>
+                </div>
+                <div class="stat-icon-box" style="background:rgba(0,122,255,0.12)">
+                    <i class="fas fa-circle-check" style="color:#007aff"></i>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div>
+                    <div class="stat-val" style="color:#5e5ce6"><?= $claimed ?></div>
+                    <div class="stat-lbl">Claimed</div>
+                </div>
+                <div class="stat-icon-box" style="background:rgba(88,86,214,0.12)">
+                    <i class="fas fa-check-double" style="color:#5e5ce6"></i>
                 </div>
             </div>
         </div>
 
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-bottom:1.5rem" class="dash-grid">
-            <div class="card" style="grid-column:1/-1">
+        <div style="margin-bottom:1.5rem">
+            <div class="card">
                 <div class="card-header">
                     <span class="card-title"><i class="fas fa-history" style="margin-right:8px;color:var(--gold)"></i>Recent Requests</span>
                     <a href="?page=my_requests" style="font-size:0.8rem;color:var(--gold);text-decoration:none">View All →</a>
@@ -801,16 +803,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_ticket'])) {
             </a>
         </div>
 
-        <!-- Filter -->
+        <!-- Filter tabs — now matching admin: approved, ready, claimed -->
         <div style="display:flex;gap:0.6rem;margin-bottom:1.5rem;flex-wrap:wrap">
             <?php
             $filter = $_GET['filter'] ?? 'all';
-            $fbuttons = ['all'=>'All','pending'=>'Pending','in_progress'=>'In Progress','ready'=>'Ready','completed'=>'Completed','rejected'=>'Rejected'];
-            foreach ($fbuttons as $fk => $fl) {
+            $fbuttons = [
+                'all'      => ['label' => 'All',              'color' => '#8892a4'],
+                'approved' => ['label' => 'Approved',          'color' => '#34c759'],
+                'ready'    => ['label' => 'Ready for Pickup',  'color' => '#007aff'],
+                'claimed'  => ['label' => 'Claimed',           'color' => '#5e5ce6'],
+            ];
+            foreach ($fbuttons as $fk => $fdata) {
                 $act = $filter === $fk;
-                echo "<a href='?page=my_requests&filter=$fk' style='padding:0.45rem 1rem;border-radius:8px;font-size:0.8rem;font-weight:600;text-decoration:none;border:1px solid;transition:all 0.2s;" .
-                     ($act ? "background:rgba(233,69,96,0.12);color:var(--gold);border-color:rgba(233,69,96,0.25)" : "background:var(--card);color:var(--gray);border-color:var(--border)") .
-                     "'>$fl</a>";
+                $c   = $fdata['color'];
+                $st  = $act
+                    ? "background:rgba(0,0,0,0.2);color:$c;border-color:$c"
+                    : "background:var(--card);color:var(--gray);border-color:var(--border)";
+                echo "<a href='?page=my_requests&filter=$fk' class='filter-tab' style='$st'>{$fdata['label']}</a>";
             }
             ?>
         </div>
@@ -819,7 +828,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_ticket'])) {
             <div class="table-wrap">
                 <?php
                 $db4 = getDB();
-                $filterWhere = $filter !== 'all' ? "AND status='$filter'" : '';
+                $allowedFilters = ['all','approved','ready','claimed'];
+                $safeFilter = in_array($filter, $allowedFilters, true) ? $filter : 'all';
+                $filterWhere = ($safeFilter !== 'all') ? "AND status='" . $db4->real_escape_string($safeFilter) . "'" : '';
                 $allTickets = $db4->query("SELECT * FROM tickets WHERE user_id={$user['id']} $filterWhere ORDER BY created_at DESC")->fetch_all(MYSQLI_ASSOC);
                 $db4->close();
                 ?>
@@ -911,10 +922,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_ticket'])) {
                 <div class="card-body">
                     <?php
                     $statRows = [
-                        ['label'=>'Pending','val'=>$pending,'color'=>'#f5a623'],
-                        ['label'=>'In Progress','val'=>$inprog,'color'=>'#007aff'],
-                        ['label'=>'Completed / Ready','val'=>$done,'color'=>'#34c759'],
-                        ['label'=>'Total','val'=>$total,'color'=>'#e94560'],
+                        ['label'=>'Approved',        'val'=>$approved, 'color'=>'#34c759'],
+                        ['label'=>'Ready for Pickup','val'=>$ready,    'color'=>'#007aff'],
+                        ['label'=>'Claimed',         'val'=>$claimed,  'color'=>'#5e5ce6'],
+                        ['label'=>'Total',           'val'=>$total,    'color'=>'#e94560'],
                     ];
                     foreach ($statRows as $sr):
                     ?>
@@ -963,7 +974,6 @@ function toggleNotif() {
 const requestTypes = <?= $rtJson ?>;
 
 function selectType(key) {
-    // Clear all
     document.querySelectorAll('.type-selector').forEach(el => {
         el.style.borderColor = 'transparent';
         el.style.background = '';
@@ -977,16 +987,12 @@ function selectType(key) {
     }
 
     document.getElementById('request_type_field').value = key;
-    
-    // Show/hide fields based on type
-    const purposeField = document.getElementById('purpose-field');
-    const semesterField = document.getElementById('semester-field');
+
+    const purposeField    = document.getElementById('purpose-field');
+    const semesterField   = document.getElementById('semester-field');
     const schoolYearField = document.getElementById('school-year-field');
-    const purposeInput = document.getElementById('purpose-input');
-    
-    // TOR: only copies and notes (hide purpose, semester, school year)
-    // All others: hide purpose only, show semester and school year
-    
+    const purposeInput    = document.getElementById('purpose-input');
+
     if (key === 'tor') {
         purposeField.classList.add('hidden');
         semesterField.classList.add('hidden');
@@ -998,7 +1004,7 @@ function selectType(key) {
         schoolYearField.classList.remove('hidden');
         purposeInput.removeAttribute('required');
     }
-    
+
     document.getElementById('requestForm').style.display = 'block';
     document.getElementById('noTypeMsg').style.display = 'none';
     if (rt) {
@@ -1017,7 +1023,6 @@ function clearType() {
     document.getElementById('noTypeMsg').style.display = 'block';
 }
 
-// Auto init if type in URL
 <?php if (!empty($selType)): ?>
 document.addEventListener('DOMContentLoaded', () => selectType('<?= $selType ?>'));
 <?php endif; ?>
